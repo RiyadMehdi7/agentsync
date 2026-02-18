@@ -1,0 +1,28 @@
+version: "3.8"
+
+services:
+  agentsync:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - AGENTSYNC_DB_PATH=/data/agentsync.db
+    volumes:
+      - agentsync-data:/data
+    restart: unless-stopped
+
+  # Optional: Redis for future distributed locking
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+volumes:
+  agentsync-data:
+  redis-data:
