@@ -12,12 +12,12 @@ def register(
     conflict_analyzer: ConflictAnalyzer,
     work_queue: WorkQueue,
     db: Database,
+    agent_id: str,
 ) -> None:
     """Register conflict-detection MCP tools."""
 
     @mcp.tool()
     async def register_agent_action(
-        agent_id: str,
         action: str,
         files: list[str],
         intent: str,
@@ -25,11 +25,10 @@ def register(
         """Register an action for semantic conflict detection.
 
         Call this when you are about to modify, delete, create, or rename
-        files.  The server will check for semantic conflicts with other
-        agents' recent work and return any issues found.
+        files. The server will check for semantic conflicts with other
+        agents' recent work and warn you about issues.
 
         Args:
-            agent_id: Your unique agent identifier
             action: Type of action — "modify", "delete", "create", or "rename"
             files: Files affected by the action
             intent: Plain-English description of what the change accomplishes

@@ -12,13 +12,15 @@ logger = logging.getLogger(__name__)
 
 
 class LockManager:
-    """Thread-safe, in-memory lock manager with SQLite persistence.
+    """Lock manager backed by SQLite for cross-process coordination.
 
     Design:
-    - In-memory dict for sub-millisecond lock checks.
-    - SQLite for persistence and crash recovery.
-    - asyncio.Lock for safe concurrent access within the event loop.
-    - Automatic expiration via a background cleanup task.
+    - SQLite (WAL mode) is the **source of truth** so multiple stdio
+      server processes (one per agent) see each other's locks.
+    - In-memory dict acts as a fast cache, refreshed from DB before
+      every acquire/check operation.
+    - asyncio.Lock serialises access within a single process.
+    - Background task periodically expires stale locks.
     """
 
     def __init__(self, db: Database, cleanup_interval: int = 60):
@@ -34,7 +36,7 @@ class LockManager:
 
     async def start(self) -> None:
         """Restore locks from DB and start the cleanup loop."""
-        await self._restore_locks()
+        await self._sync_from_db()
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
         logger.info("LockManager started")
 
@@ -60,10 +62,13 @@ class LockManager:
     ) -> dict[str, Any]:
         """Attempt to acquire a lock on a file.
 
-        Returns a dict with at least ``{"success": bool}``.
-        On failure it also contains info about the blocking lock.
+        Always refreshes from DB first so we see locks held by other
+        server processes (other agents using stdio transport).
         """
         async with self._mu:
+            # Refresh from DB to see locks from other processes
+            await self._sync_from_db()
+
             if file_path in self._locks:
                 existing = self._locks[file_path]
 
@@ -104,6 +109,9 @@ class LockManager:
     async def release_lock(self, file_path: str, agent_id: str) -> bool:
         """Release a lock. Only the owner can release."""
         async with self._mu:
+            # Refresh so we have latest state
+            await self._sync_from_db()
+
             lock_info = self._locks.get(file_path)
             if lock_info is None:
                 logger.warning("Attempted to release non-existent lock on %s", file_path)
@@ -123,6 +131,7 @@ class LockManager:
 
     async def get_lock_info(self, file_path: str) -> dict[str, Any] | None:
         async with self._mu:
+            await self._sync_from_db()
             lock_info = self._locks.get(file_path)
             if lock_info is None:
                 return None
@@ -133,11 +142,13 @@ class LockManager:
 
     async def get_all_locks(self) -> list[dict[str, Any]]:
         async with self._mu:
+            await self._sync_from_db()
             self._purge_expired()
             return [lock.model_dump(mode="json") for lock in self._locks.values()]
 
     async def get_locks_by_agent(self, agent_id: str) -> list[dict[str, Any]]:
         async with self._mu:
+            await self._sync_from_db()
             self._purge_expired()
             return [
                 lock.model_dump(mode="json")
@@ -147,6 +158,7 @@ class LockManager:
 
     async def release_all_agent_locks(self, agent_id: str) -> int:
         async with self._mu:
+            await self._sync_from_db()
             to_release = [fp for fp, lk in self._locks.items() if lk.agent_id == agent_id]
             for fp in to_release:
                 del self._locks[fp]
@@ -156,6 +168,7 @@ class LockManager:
 
     async def get_active_lock_count(self) -> int:
         async with self._mu:
+            await self._sync_from_db()
             self._purge_expired()
             return len(self._locks)
 
@@ -169,20 +182,15 @@ class LockManager:
         for fp in expired:
             del self._locks[fp]
 
-    async def _cleanup_loop(self) -> None:
-        """Periodically clean up expired locks in memory and DB."""
-        while True:
-            await asyncio.sleep(self._cleanup_interval)
-            async with self._mu:
-                self._purge_expired()
-            count = await self.db.cleanup_expired_locks()
-            if count:
-                logger.info("Cleaned up %d expired locks from DB", count)
+    async def _sync_from_db(self) -> None:
+        """Rebuild in-memory cache from the DB (caller must hold _mu).
 
-    async def _restore_locks(self) -> None:
-        """Restore non-expired locks from DB on startup."""
+        This is the key to multi-process coordination: each stdio server
+        process reads the shared SQLite DB to see all active locks.
+        """
         rows = await self.db.get_active_locks()
         now = datetime.now()
+        self._locks.clear()
         for row in rows:
             expires_at = datetime.fromisoformat(row["expires_at"])
             if expires_at > now:
@@ -193,4 +201,13 @@ class LockManager:
                     locked_at=datetime.fromisoformat(row["locked_at"]),
                     expires_at=expires_at,
                 )
-        logger.info("Restored %d active locks from database", len(self._locks))
+
+    async def _cleanup_loop(self) -> None:
+        """Periodically clean up expired locks in memory and DB."""
+        while True:
+            await asyncio.sleep(self._cleanup_interval)
+            async with self._mu:
+                self._purge_expired()
+            count = await self.db.cleanup_expired_locks()
+            if count:
+                logger.info("Cleaned up %d expired locks from DB", count)

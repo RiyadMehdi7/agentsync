@@ -28,6 +28,7 @@ def init(db_path: str) -> None:
     async def _init() -> None:
         db = Database(db_path)
         await db.initialize()
+        await db.close()
         click.echo(f"Database initialized at {db_path}")
 
     asyncio.run(_init())

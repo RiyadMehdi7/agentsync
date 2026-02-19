@@ -14,6 +14,7 @@ def register(
     work_queue: WorkQueue,
     event_bus: EventBus,
     db: Database,
+    agent_id: str,
 ) -> None:
     """Register lock-related MCP tools."""
 
@@ -21,19 +22,17 @@ def register(
     async def request_file_lock(
         files: list[str],
         description: str,
-        agent_id: str,
         ttl_seconds: int = 1800,
     ) -> dict:
-        """Request exclusive locks on one or more files.
+        """Request exclusive locks on one or more files before editing them.
 
-        Before modifying files, call this tool to claim exclusive access.
-        If another agent already holds a lock you will receive details about
-        the blocking lock so you can coordinate.
+        ALWAYS call this before modifying any files. If another agent holds
+        a lock you will see who and what they are doing, so you can wait or
+        work on something else.
 
         Args:
-            files: List of file paths to lock (e.g. ["src/auth.py"])
-            description: What you plan to do (e.g. "Fix login bug")
-            agent_id: Your unique identifier (e.g. "claude-code-alice")
+            files: File paths to lock, relative to the repo root (e.g. ["src/auth.py"])
+            description: Brief description of your planned work
             ttl_seconds: Lock timeout in seconds (default 1800 = 30 min)
         """
         await db.register_agent(agent_id)
@@ -73,17 +72,16 @@ def register(
     @mcp.tool()
     async def release_file_lock(
         files: list[str],
-        agent_id: str,
         commit_hash: str | None = None,
     ) -> dict:
-        """Release locks on files after completing work.
+        """Release locks on files after you are done editing them.
 
-        Always release your locks when done so other agents can proceed.
+        ALWAYS call this when you finish your task so other agents can
+        proceed with their work.
 
         Args:
-            files: Files to unlock
-            agent_id: Your agent id (must be the lock owner)
-            commit_hash: Optional git commit hash if work was committed
+            files: File paths to unlock
+            commit_hash: Optional git commit hash if you committed the changes
         """
         released: list[str] = []
         for file_path in files:
@@ -103,9 +101,9 @@ def register(
 
     @mcp.tool()
     async def check_file_status(files: list[str]) -> list[dict]:
-        """Check the lock status of one or more files without acquiring locks.
+        """Check whether files are locked by another agent.
 
-        Use this to see if files are available before starting work.
+        Call this before starting work to see if files are available.
 
         Args:
             files: File paths to check

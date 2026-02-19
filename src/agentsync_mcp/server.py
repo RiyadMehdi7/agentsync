@@ -9,6 +9,7 @@ from mcp.server.fastmcp import FastMCP
 from agentsync_mcp.db.database import Database
 from agentsync_mcp.services.conflict_analyzer import ConflictAnalyzer
 from agentsync_mcp.services.event_bus import EventBus
+from agentsync_mcp.services.identity import generate_agent_id
 from agentsync_mcp.services.lock_manager import LockManager
 from agentsync_mcp.services.work_queue import WorkQueue
 from agentsync_mcp.tools import conflicts as conflict_tools
@@ -37,10 +38,14 @@ async def lifespan(server: FastMCP) -> AsyncIterator[None]:
     event_bus = EventBus()
     conflict_analyzer = ConflictAnalyzer(db, work_queue, config)
 
+    # --- Identity ---
+    my_agent_id = generate_agent_id()
+    logger.info("This agent's ID: %s", my_agent_id)
+
     # --- Register MCP tools ---
-    lock_tools.register(server, lock_manager, work_queue, event_bus, db)
+    lock_tools.register(server, lock_manager, work_queue, event_bus, db, my_agent_id)
     work_tools.register(server, work_queue)
-    conflict_tools.register(server, conflict_analyzer, work_queue, db)
+    conflict_tools.register(server, conflict_analyzer, work_queue, db, my_agent_id)
 
     # --- Register MCP resource ---
     @server.resource("agentsync://stats")
