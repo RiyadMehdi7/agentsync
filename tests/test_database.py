@@ -21,6 +21,30 @@ class TestDatabase:
         agents = await db.get_all_active_agents()
         assert agents.count("agent-1") == 1
 
+    async def test_active_sessions_include_metadata(self, db: Database) -> None:
+        await db.register_agent(
+            "codex-host-123-abc123",
+            "codex",
+            session={
+                "client_name": "Codex",
+                "session_label": "Codex-agentsync-main-123",
+                "host": "host",
+                "pid": 123,
+                "cwd": "/repo",
+                "repo_root": "/repo",
+                "repo_name": "agentsync",
+                "git_branch": "main",
+                "transport": "stdio",
+                "metadata": {"detected_from": "env:CODEX_*"},
+            },
+        )
+
+        sessions = await db.get_active_sessions(stale_after_seconds=3600)
+        assert len(sessions) == 1
+        assert sessions[0]["agent_type"] == "codex"
+        assert sessions[0]["client_name"] == "Codex"
+        assert sessions[0]["metadata"]["detected_from"] == "env:CODEX_*"
+
     async def test_create_and_get_lock(self, db: Database) -> None:
         lock = LockInfo(
             file_path="a.py",

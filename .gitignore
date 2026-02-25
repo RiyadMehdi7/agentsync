@@ -26,6 +26,9 @@ env/
 data/
 *.db
 
+# AgentSync local smoke-test artifacts
+.agentsync_auto_smoke*.txt
+
 # OS
 .DS_Store
 Thumbs.db

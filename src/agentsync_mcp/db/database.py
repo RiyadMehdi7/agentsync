@@ -45,6 +45,7 @@ class Database:
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA foreign_keys=ON")
         await self._conn.executescript(schema_sql)
+        await self._migrate_schema()
         await self._conn.commit()
 
         logger.info("Database initialized at %s", self.db_path)
@@ -59,20 +60,111 @@ class Database:
         assert self._conn is not None, "Database not initialized — call initialize() first"
         return self._conn
 
+    async def _migrate_schema(self) -> None:
+        """Backfill newer columns on existing databases."""
+        agent_columns = {
+            "client_name": "TEXT",
+            "session_label": "TEXT",
+            "host": "TEXT",
+            "pid": "INTEGER",
+            "cwd": "TEXT",
+            "repo_root": "TEXT",
+            "repo_name": "TEXT",
+            "git_branch": "TEXT",
+            "transport": "TEXT DEFAULT 'stdio'",
+            "metadata": "TEXT",
+        }
+        for column, ddl in agent_columns.items():
+            await self._ensure_column("agents", column, ddl)
+
+        await self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agents_status_last_active ON agents(status, last_active)"
+        )
+
+    async def _ensure_column(self, table: str, column: str, ddl: str) -> None:
+        cursor = await self.conn.execute(f"PRAGMA table_info({table})")
+        rows = await cursor.fetchall()
+        existing = {row["name"] for row in rows}
+        if column in existing:
+            return
+        await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
     # ------------------------------------------------------------------
     # Agent operations
     # ------------------------------------------------------------------
 
-    async def register_agent(self, agent_id: str, agent_type: str = "unknown") -> None:
+    async def register_agent(
+        self,
+        agent_id: str,
+        agent_type: str = "unknown",
+        *,
+        user_id: str | None = None,
+        session: dict[str, Any] | None = None,
+    ) -> None:
+        session = session or {}
+        metadata = session.get("metadata")
+        metadata_json = json.dumps(metadata) if metadata is not None else None
+
         await self.conn.execute(
             """
-            INSERT INTO agents (agent_id, agent_type)
-            VALUES (?, ?)
+            INSERT INTO agents (
+                agent_id,
+                agent_type,
+                client_name,
+                session_label,
+                user_id,
+                host,
+                pid,
+                cwd,
+                repo_root,
+                repo_name,
+                git_branch,
+                transport,
+                metadata
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(agent_id) DO UPDATE SET
+                agent_type = COALESCE(excluded.agent_type, agents.agent_type),
+                client_name = COALESCE(excluded.client_name, agents.client_name),
+                session_label = COALESCE(excluded.session_label, agents.session_label),
+                user_id = COALESCE(excluded.user_id, agents.user_id),
+                host = COALESCE(excluded.host, agents.host),
+                pid = COALESCE(excluded.pid, agents.pid),
+                cwd = COALESCE(excluded.cwd, agents.cwd),
+                repo_root = COALESCE(excluded.repo_root, agents.repo_root),
+                repo_name = COALESCE(excluded.repo_name, agents.repo_name),
+                git_branch = COALESCE(excluded.git_branch, agents.git_branch),
+                transport = COALESCE(excluded.transport, agents.transport),
+                metadata = COALESCE(excluded.metadata, agents.metadata),
                 last_active = CURRENT_TIMESTAMP,
                 status = 'active'
             """,
-            (agent_id, agent_type),
+            (
+                agent_id,
+                agent_type,
+                session.get("client_name"),
+                session.get("session_label"),
+                user_id,
+                session.get("host"),
+                session.get("pid"),
+                session.get("cwd"),
+                session.get("repo_root"),
+                session.get("repo_name"),
+                session.get("git_branch"),
+                session.get("transport"),
+                metadata_json,
+            ),
+        )
+        await self.conn.commit()
+
+    async def touch_agent(self, agent_id: str) -> None:
+        await self.conn.execute(
+            """
+            UPDATE agents
+            SET last_active = CURRENT_TIMESTAMP, status = 'active'
+            WHERE agent_id = ?
+            """,
+            (agent_id,),
         )
         await self.conn.commit()
 
@@ -82,6 +174,104 @@ class Database:
         )
         rows = await cursor.fetchall()
         return [row["agent_id"] for row in rows]
+
+    async def get_agent(self, agent_id: str) -> dict[str, Any] | None:
+        cursor = await self.conn.execute(
+            """
+            SELECT
+                agent_id,
+                agent_type,
+                client_name,
+                session_label,
+                user_id,
+                host,
+                pid,
+                cwd,
+                repo_root,
+                repo_name,
+                git_branch,
+                transport,
+                metadata,
+                first_seen,
+                last_active,
+                status
+            FROM agents
+            WHERE agent_id = ?
+            """,
+            (agent_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return self._agent_row_to_dict(row)
+
+    async def get_active_sessions(
+        self, stale_after_seconds: int = 90
+    ) -> list[dict[str, Any]]:
+        cursor = await self.conn.execute(
+            """
+            SELECT
+                agent_id,
+                agent_type,
+                client_name,
+                session_label,
+                user_id,
+                host,
+                pid,
+                cwd,
+                repo_root,
+                repo_name,
+                git_branch,
+                transport,
+                metadata,
+                first_seen,
+                last_active,
+                status
+            FROM agents
+            WHERE status = 'active'
+              AND last_active >= datetime('now', ?)
+            ORDER BY last_active DESC
+            """,
+            (f"-{stale_after_seconds} seconds",),
+        )
+        rows = await cursor.fetchall()
+        return [self._agent_row_to_dict(row) for row in rows]
+
+    async def mark_stale_agents_inactive(self, stale_after_seconds: int = 90) -> int:
+        cursor = await self.conn.execute(
+            """
+            UPDATE agents
+            SET status = 'inactive'
+            WHERE status = 'active'
+              AND last_active < datetime('now', ?)
+            """,
+            (f"-{stale_after_seconds} seconds",),
+        )
+        await self.conn.commit()
+        return cursor.rowcount
+
+    async def set_agent_status(self, agent_id: str, status: str) -> None:
+        await self.conn.execute(
+            """
+            UPDATE agents
+            SET status = ?
+            WHERE agent_id = ?
+            """,
+            (status, agent_id),
+        )
+        await self.conn.commit()
+
+    def _agent_row_to_dict(self, row: aiosqlite.Row) -> dict[str, Any]:
+        data = dict(row)
+        raw_metadata = data.get("metadata")
+        if raw_metadata:
+            try:
+                data["metadata"] = json.loads(raw_metadata)
+            except json.JSONDecodeError:
+                data["metadata"] = {"raw": raw_metadata}
+        else:
+            data["metadata"] = None
+        return data
 
     # ------------------------------------------------------------------
     # Lock operations

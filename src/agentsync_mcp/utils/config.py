@@ -32,6 +32,18 @@ class Config:
         default_factory=lambda: int(os.environ.get("AGENTSYNC_CLEANUP_INTERVAL", "60"))
     )
 
+    # Session presence / autodetection
+    session_heartbeat_interval: int = field(
+        default_factory=lambda: int(
+            os.environ.get("AGENTSYNC_SESSION_HEARTBEAT_INTERVAL", "15")
+        )
+    )
+    session_stale_after_seconds: int = field(
+        default_factory=lambda: int(
+            os.environ.get("AGENTSYNC_SESSION_STALE_AFTER_SECONDS", "90")
+        )
+    )
+
     # LLM (for conflict analysis)
     anthropic_api_key: str | None = field(
         default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY")

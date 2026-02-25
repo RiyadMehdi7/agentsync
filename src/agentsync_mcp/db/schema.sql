@@ -3,13 +3,24 @@ CREATE TABLE IF NOT EXISTS agents (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id TEXT NOT NULL UNIQUE,
     agent_type TEXT NOT NULL DEFAULT 'unknown',
+    client_name TEXT,
+    session_label TEXT,
     user_id TEXT,
+    host TEXT,
+    pid INTEGER,
+    cwd TEXT,
+    repo_root TEXT,
+    repo_name TEXT,
+    git_branch TEXT,
+    transport TEXT DEFAULT 'stdio',
+    metadata TEXT,
     first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     status TEXT DEFAULT 'active'
 );
 
 CREATE INDEX IF NOT EXISTS idx_agents_agent_id ON agents(agent_id);
+CREATE INDEX IF NOT EXISTS idx_agents_status_last_active ON agents(status, last_active);
 
 -- File locks table
 CREATE TABLE IF NOT EXISTS file_locks (

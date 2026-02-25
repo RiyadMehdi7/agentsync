@@ -18,6 +18,22 @@ def register(
 ) -> None:
     """Register lock-related MCP tools."""
 
+    async def _session_summary(for_agent_id: str) -> dict | None:
+        row = await db.get_agent(for_agent_id)
+        if not row:
+            return None
+        return {
+            "agent_id": row["agent_id"],
+            "agent_type": row.get("agent_type"),
+            "client_name": row.get("client_name"),
+            "session_label": row.get("session_label"),
+            "repo_name": row.get("repo_name"),
+            "git_branch": row.get("git_branch"),
+            "host": row.get("host"),
+            "pid": row.get("pid"),
+            "last_active": row.get("last_active"),
+        }
+
     @mcp.tool()
     async def request_file_lock(
         files: list[str],
@@ -35,7 +51,7 @@ def register(
             description: Brief description of your planned work
             ttl_seconds: Lock timeout in seconds (default 1800 = 30 min)
         """
-        await db.register_agent(agent_id)
+        await db.touch_agent(agent_id)
 
         locked: list[str] = []
         blocked: list[dict] = []
@@ -54,6 +70,7 @@ def register(
                     {
                         "file": file_path,
                         "locked_by": result["locked_by"],
+                        "locked_by_session": await _session_summary(result["locked_by"]),
                         "locked_at": result["locked_at"],
                         "description": result["description"],
                         "expires_at": result["expires_at"],
@@ -83,6 +100,7 @@ def register(
             files: File paths to unlock
             commit_hash: Optional git commit hash if you committed the changes
         """
+        await db.touch_agent(agent_id)
         released: list[str] = []
         for file_path in files:
             if await lock_manager.release_lock(file_path, agent_id):
@@ -108,14 +126,17 @@ def register(
         Args:
             files: File paths to check
         """
+        await db.touch_agent(agent_id)
         statuses: list[dict] = []
         for file_path in files:
             info = await lock_manager.get_lock_info(file_path)
+            session = await _session_summary(info["agent_id"]) if info else None
             statuses.append(
                 {
                     "file": file_path,
                     "locked": info is not None,
                     "locked_by": info["agent_id"] if info else None,
+                    "locked_by_session": session,
                     "description": info["description"] if info else None,
                     "expires_at": info["expires_at"] if info else None,
                 }

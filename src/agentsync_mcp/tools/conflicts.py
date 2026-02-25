@@ -33,7 +33,7 @@ def register(
             files: Files affected by the action
             intent: Plain-English description of what the change accomplishes
         """
-        await db.register_agent(agent_id)
+        await db.touch_agent(agent_id)
         await work_queue.register_action(agent_id, action, files, intent)
 
         conflicts = await conflict_analyzer.detect_semantic_conflicts(
@@ -58,4 +58,5 @@ def register(
             branch1: First branch name
             branch2: Second branch name
         """
+        await db.touch_agent(agent_id)
         return await conflict_analyzer.generate_merge_suggestion(file, branch1, branch2)
